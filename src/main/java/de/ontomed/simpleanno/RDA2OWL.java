@@ -24,8 +24,31 @@ import java.util.zip.ZipFile;
  */
 public class RDA2OWL {
 
+    private static class EntityDescription {
+        private TYPE type;
+        HashSet<String> lines;
+    }
+
+    private static final String XMLNS_PREFIX = "xmlns:";
+
+    private static final String NS_OWL = "http://www.w3.org/2002/07/owl#";
+
+    private enum TYPE {
+        CLASS("Class"),
+        INDIVIDUAL("Individual"),
+        OBJECT_PROPERTY("ObjectProperty"),
+        DATATYPE_PROPERTY("DatatypeProperty"),
+        ANNOTATION_PROPERTY("AnnotationProperty");
+
+        private String element;
+        TYPE(String element) {this.element = element;}
+        public String element() {return element;}
+    }
+
     private static final Pattern entityDefinitionStartPattern = Pattern.compile("\\<rdf:Description rdf:about=\"(.+?)\"\\>");
     private static final Pattern entityDefinitionEndPattern = Pattern.compile("\\</rdf:Description\\>");
+
+    private static final Pattern entityTypePattern = Pattern.compile("\\<rdf:type rdf:resource=\"(.+?)\"\\s*\\/\\>");
 
     public static void main(String[] args) {
 
@@ -67,7 +90,7 @@ public class RDA2OWL {
             Matcher versionMatcher = versionPattern.matcher(responseBody);
             if (versionMatcher.find()) {
                 latestRDAVersion = versionMatcher.group(1);
-                System.out.println("Latest RDA release version: " + latestRDAVersion);
+                System.out.format("Latest RDA release version: %s\n", latestRDAVersion);
             } else {
                 System.out.println("Could not detect latest RDA release version. Maybe the github page layout has changed. Please contact the developer of this tool.");
                 System.exit(1);
@@ -82,11 +105,12 @@ public class RDA2OWL {
 
         // download latest release to tmp folder
 
-        // TODO check for previously downloaded file (maybe do an MD5 checksum comparison in order to check it's really the file)
-
-        System.out.println("Downloading latest RDA release to tmp folder...");
+        // check for previously downloaded file
+        // TODO maybe do an MD5 checksum comparison in order to check it's really the file
 
         File rootFolder = new File(System.getProperty("java.io.tmpdir"), "rda2owl");
+
+        System.out.format("Downloading latest RDA release to %s ...\n", rootFolder.getAbsolutePath());
 
         File zipFile = new File(rootFolder, "RDA-" + latestRDAVersion + ".zip");
 
@@ -105,7 +129,7 @@ public class RDA2OWL {
                 IOUtils.copy(in, out);
                 IOUtils.closeQuietly(out);
 
-                System.out.println("File downloaded to " + zipFile.getAbsolutePath());
+                System.out.format("File downloaded to %s\n", zipFile.getAbsolutePath());
             } catch (IOException ex) {
                 System.out.println("Error downloading file.");
                 System.exit(1);
@@ -137,7 +161,7 @@ public class RDA2OWL {
                 System.exit(1);
             }
         } else {
-            System.out.println("Found file in local file system.");
+            System.out.println("Found already existing file in local file system.");
         }
 
         System.out.println("\nStarting conversion...");
@@ -146,6 +170,7 @@ public class RDA2OWL {
         File rdfxmlBaseFolder = new File(rdaBaseFolder, "xml");
 
         File elementsFolder = new File(rdfxmlBaseFolder, "Elements");
+        File termListFolder = new File(rdfxmlBaseFolder, "termList");
 
         File owlDestFolder = new File(rdaBaseFolder, "owl");
         owlDestFolder.mkdirs();
@@ -174,35 +199,225 @@ public class RDA2OWL {
 
             try {
                 if (folder.exists() && folder.isDirectory()) {
-                    handlePropertyFiles(file, folder);
+                    handlePropertyFiles(file, folder, owlDestFolder);
                 } else {
-                    handleSingleFile(file);
+                    handleSingleFile(file, owlDestFolder);
                 }
             } catch (IOException e) {
                 e.printStackTrace();
             }
 
         });
+
+        Arrays.stream(termListFolder.listFiles(new FileFilter() {
+            @Override
+            public boolean accept(File file) {
+                return file.isFile() && file.getName().endsWith(".xml");
+            }
+        })).forEach(file -> {
+            try {
+                handleSingleFile(file, owlDestFolder);
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+
+        });
+
     }
 
-    private static void handlePropertyFiles(File mainFile, File folder) throws IOException {
-        HashMap<String, HashSet<String>> annotationProperties = new HashMap<>();
-        HashMap<String, HashSet<String>> objectProperties = new HashMap<>();
-        HashMap<String, HashSet<String>> datatypeProperties = new HashMap<>();
+    private static void handlePropertyFiles(File mainFile, File folder, File outputRootFolder) throws IOException {
+//        HashMap<String, HashSet<String>> annotationProperties = new HashMap<>();
+//        HashMap<String, HashSet<String>> objectProperties = new HashMap<>();
+//        HashMap<String, HashSet<String>> datatypeProperties = new HashMap<>();
 
-
-        handleSingleFile(mainFile);
-        handleSingleFile(new File(folder, "datatype.xml"));
-        handleSingleFile(new File(folder, "object.xml"));
+        handleSingleFile(mainFile, outputRootFolder);
+        handleSingleFile(new File(folder, "datatype.xml"), outputRootFolder);
+        handleSingleFile(new File(folder, "object.xml"), outputRootFolder);
     }
 
-    private static void handleSingleFile(File file) throws IOException {
-        System.out.println("\nFile: " + file.getAbsolutePath());
-        BufferedReader in = new BufferedReader(new FileReader(file));
+    private static void handleSingleFile(File inputFile, File outputRootFolder) throws IOException {
 
-        HashMap<String, HashSet<String>> entities = new HashMap<>();
+        System.out.format("\nInput file: %s\n", inputFile.getAbsolutePath());
+        File outputFile = getOutputFile(inputFile, outputRootFolder);
 
-        collectEntities(in, entities);
+        BufferedReader in = new BufferedReader(new FileReader(inputFile));
+
+        FileWriter out = new FileWriter(outputFile);
+
+//        HashMap<String, HashSet<String>> entities = new HashMap<>();
+//        collectEntities(in, entities);
+
+        String fileName = inputFile.getName();
+        TYPE propertyTypeHint;
+        switch (fileName) {
+            case "datatype.xml": propertyTypeHint = TYPE.DATATYPE_PROPERTY; break;
+            case "object.xml": propertyTypeHint = TYPE.OBJECT_PROPERTY; break;
+            default: propertyTypeHint = TYPE.ANNOTATION_PROPERTY; break;
+        }
+
+
+        handleNamespaces(in, out);
+
+        if (inputFile.getParentFile().getName().equals("Elements")) {
+            handleOntologyHeader(in, out);
+        } else {
+            handleSkosOntologyHeader(in, out);
+        }
+
+
+        while  (handleNextEntity(in, out, propertyTypeHint));
+
+        in.close();
+        out.close();
+    }
+
+    private static void handleNamespaces(BufferedReader in, Writer out) throws IOException {
+        LinkedList<String> lines = new LinkedList<>();
+        String line = null;
+
+        // fast forward to xmlns:
+        while (!(line = in.readLine()).trim().startsWith("xmlns:")) {
+            out.write(line);
+            out.write("\n");
+        }
+
+        boolean containsOwlNS = false;
+
+        while (line.trim().startsWith("xmlns:")) {
+            lines.add(line);
+            if (line.contains(NS_OWL)) {
+                containsOwlNS = true;
+            }
+            line = in.readLine();
+        }
+
+        if (!containsOwlNS) {
+            lines.add(lines.size() - 1, "    " + XMLNS_PREFIX + "owl=\"" + NS_OWL + "\"" );
+        }
+
+        for (String nsLine : lines) {
+            out.write(nsLine);
+            out.write("\n");
+        }
+
+        out.write(line);
+        out.write("\n");
+
+    }
+
+    // transforms the first rdf:Description to an owl:Ontology declaration
+    private static void handleOntologyHeader(BufferedReader in, Writer out) throws IOException {
+        String line = null;
+
+        while ((line = in.readLine()) != null) {
+            String ontologyURI = startOfEntity(line);
+            if (ontologyURI != null) {
+                line = "<owl:Ontology rdf:about=\"" + ontologyURI + "\">";
+            }
+            if (isEndOfEntity(line)) {
+                out.write("</owl:Ontology>\n");
+                break;
+            }
+            out.write(line + "\n");
+
+        }
+    }
+
+    private static final Pattern SKOS_CONCEPT_SCHEME_START_PATTERN = Pattern.compile("<skos:ConceptScheme rdf:about=\"(.*?)\">");
+    private static final Pattern SKOS_CONCEPT_SCHEME_END_PATTERN = Pattern.compile("</skos:ConceptScheme>");
+
+    private static void handleSkosOntologyHeader(BufferedReader in, Writer out) throws IOException {
+        String ontologyURI = null;
+        LinkedList<String> lines = new LinkedList<>();
+        String line = null;
+
+        while ((line = in.readLine()) != null) {
+            lines.add(line);
+            Matcher matcher = SKOS_CONCEPT_SCHEME_START_PATTERN.matcher(line);
+            if (matcher.find()) {
+                ontologyURI = matcher.group(1);
+            } else {
+                matcher = SKOS_CONCEPT_SCHEME_START_PATTERN.matcher(line);
+                if (matcher.find()) {
+                    break;
+                }
+            }
+        }
+
+        lines.addFirst("<owl:Ontology rdf:about=\"" + ontologyURI + "\" />");
+
+        for (String actualLine : lines) {
+            out.write(actualLine + "\n");
+        }
+
+    }
+
+    private static boolean handleNextEntity(BufferedReader in, Writer out, TYPE fileSpecificPropertyType) throws IOException {
+        String line = null;
+        LinkedList<String> lines = new LinkedList<>();
+
+        String entityURI = null;
+        TYPE entityType = null;
+
+        while ((line = in.readLine()) != null) {
+
+            if (entityURI == null) {
+                // still fast-forwarding to the start of the next entity
+                entityURI = startOfEntity(line);
+                if (entityURI == null) {
+                    // still no entity start
+                    continue;
+                }
+            }
+
+
+            // we are inside of an entity
+
+            // look for type element
+            Matcher entityTypeMatcher = entityTypePattern.matcher(line);
+            if (entityTypeMatcher.find()) {
+                // this is the line that contains the rdf:type element
+                // we extract the type and create a proper element instead of the rdf:Description element
+                String entityTypeURI = entityTypeMatcher.group(1);
+                String entityTypeName = entityTypeURI.substring(entityTypeURI.lastIndexOf('#') + 1);
+                switch (entityTypeName.toLowerCase()) {
+                    case "class": entityType = TYPE.CLASS; break;
+                    case "individual": entityType = TYPE.INDIVIDUAL; break;
+                    case "objectproperty": entityType = TYPE.OBJECT_PROPERTY; break;
+                    case "property": entityType = fileSpecificPropertyType; break;
+                    default: break;
+                }
+            } else if (isEndOfEntity(line)) {
+                // this is the end, my friend
+
+                lines.add(line);
+
+                if (entityType != null) {
+                    // we need to replace the rdf:Description start and end tags (first and last line) with the concrete owl entity elements
+                    String newStartLine = "<owl:" + entityType.element + " rdf:about=\"" + entityURI + "\">";
+                    lines.removeFirst();
+                    lines.addFirst(newStartLine);
+
+                    String newEndLine = "</owl:" + entityType.element + ">";
+                    lines.removeLast();
+                    lines.add(newEndLine);
+                }
+
+                for (String actualLine : lines) {
+                    out.write(actualLine + "\n");
+                }
+
+                return true;
+
+            } else {
+                // regular line, copy it
+                lines.add(line);
+            }
+
+        }
+        // no more entities, bye bye
+        return false;
+
     }
 
     private static <M extends Map<String, S>, S extends Set<String>> void collectEntities(BufferedReader in, M map) throws IOException {
@@ -245,5 +460,37 @@ public class RDA2OWL {
      */
     private static String normalizeNameSpace(String orig) {
         return orig.replaceAll("/datatype/", "/").replaceAll("/object/", "/");
+    }
+
+    private final static Pattern xmlFileNameBasePattern = Pattern.compile("(\\w*)\\.xml");
+
+    private static File getOutputFile(File inputFile, File outputRootFolder) {
+        String inputFileName = inputFile.getName();
+
+        Matcher matcher = xmlFileNameBasePattern.matcher(inputFileName);
+        if (!matcher.find()) {
+            throw  new IllegalArgumentException("Unexpected file name: " + inputFile.getAbsolutePath());
+        }
+
+        String outputFileName = matcher.group(1) + ".owl";
+
+        File outputFile;
+
+        if (inputFileName.equals("datatype.xml") || inputFileName.equals("object.xml")) {
+            String inputSubFolderName = inputFile.getParentFile().getParentFile().getName();
+            String inputFolderName = inputFile.getParentFile().getName(); // should always be "Elements"
+            outputFile =new File(new File(new File(outputRootFolder, inputSubFolderName), inputFolderName), outputFileName);
+        } else {
+            String inputFolderName = inputFile.getParentFile().getName(); // either "Elements" or "termList"
+            outputFile = new File(new File(outputRootFolder, inputFolderName), outputFileName);
+        }
+
+        File outputFolder = outputFile.getParentFile();
+        if (!outputFolder.exists()) {
+            outputFolder.mkdirs();
+        }
+
+        return outputFile;
+
     }
 }
