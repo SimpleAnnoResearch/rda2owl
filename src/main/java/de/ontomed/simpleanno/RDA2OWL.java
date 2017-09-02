@@ -13,6 +13,7 @@ import org.apache.http.impl.client.HttpClients;
 import org.apache.http.util.EntityUtils;
 
 import java.io.*;
+import java.nio.file.Path;
 import java.util.*;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -28,6 +29,14 @@ public class RDA2OWL {
         private TYPE type;
         HashSet<String> lines;
     }
+
+    private static class ImportCatalogEntry {
+        private String uri;
+        private String physicalLocation;
+
+    }
+
+    private static LinkedList<ImportCatalogEntry> importCatalogEntries = new LinkedList<>();
 
     private static final String XMLNS_PREFIX = "xmlns:";
 
@@ -223,6 +232,81 @@ public class RDA2OWL {
 
         });
 
+        // generate main ontology file (which imports all the others)
+
+        try {
+            File mainOntologyFile = new File(owlDestFolder, "rda-all.owl");
+            FileWriter out = new FileWriter(mainOntologyFile);
+
+            System.out.format("Writing main ontology file %s\n", mainOntologyFile.getAbsolutePath());
+
+            out.write("<?xml version=\"1.0\"?>\n" +
+                    "<rdf:RDF xmlns=\"http://simple-anno.de/ontologies/mdo/rda-all#\"\n" +
+                    "     xml:base=\"http://simple-anno.de/ontologies/mdo/rda-all\"\n" +
+                    "     xmlns:owl=\"http://www.w3.org/2002/07/owl#\"\n" +
+                    "     xmlns:xsd=\"http://www.w3.org/2001/XMLSchema#\"\n" +
+                    "     xmlns:skos=\"http://www.w3.org/2004/02/skos/core#\"\n" +
+                    "     xmlns:rdfs=\"http://www.w3.org/2000/01/rdf-schema#\"\n" +
+                    "     xmlns:xml=\"http://www.w3.org/XML/1998/namespace\"\n" +
+                    "     xmlns:foaf=\"http://xmlns.com/foaf/0.1/\"\n" +
+                    "     xmlns:rdakit=\"http://metadataregistry.org/uri/profile/rdakit/\"\n" +
+                    "     xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n" +
+                    "     xmlns:regap=\"http://metadataregistry.org/uri/profile/regap/\"\n" +
+                    "     xmlns:dc=\"http://purl.org/dc/elements/1.1/\"");
+
+            Pattern nsPrefixPattern = Pattern.compile("http://rdaregistry.info/.+?/(.*?)/*$");
+
+            // streams and lambdas would be a PITA here because of exception handling and FileWriter required to be final
+            for (ImportCatalogEntry entry : importCatalogEntries) {
+                Matcher nsPrefixMatcher = nsPrefixPattern.matcher(entry.uri);
+                nsPrefixMatcher.find();
+                out.write("\n     xmlns:" + nsPrefixMatcher.group(1).replace('/', '_') + "=\"" + entry.uri + "\"");
+            }
+
+            // close the rdf:RDF tag
+            out.write(">\n");
+
+            out.write("    <owl:Ontology rdf:about=\"http://simple-anno.de/ontologies/mdo/rda-all\">\n");
+
+            out.write("      <owl:imports rdf:resource=\"http://purl.org/NET/dc_owl2dl/elements\"/>\n");
+
+            for (ImportCatalogEntry entry : importCatalogEntries) {
+                out.write("      <owl:imports rdf:resource=\"" + entry.uri + "\"/>\n");
+            }
+
+            out.write("    </owl:Ontology>\n" +
+                    "</rdf:RDF>\n");
+
+            IOUtils.closeQuietly(out);
+
+
+            // generate catalog.xml file
+
+            File catalogFile = new File(owlDestFolder, "catalog-v001.xml");
+
+            System.out.format("Writing xml catalog file %s\n", catalogFile.getAbsolutePath());
+
+            out = new FileWriter(catalogFile);
+
+            out.write("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n");
+            out.write("<catalog prefer=\"public\" xmlns=\"urn:oasis:names:tc:entity:xmlns:xml:catalog\">\n");
+
+            out.write("    <uri id=\"User Entered Import Resolution\" name=\"http://simple-anno.de/ontologies/mdo/rda-all\" uri=\"rda-all.owl\"/>");
+
+            for (ImportCatalogEntry entry : importCatalogEntries) {
+                out.write("    <uri id=\"User Entered Import Resolution\" name=\"" + entry.uri + "\" uri=\"" + entry.physicalLocation + "\"/>\n");
+            }
+
+            out.write("</catalog>\n");
+
+            IOUtils.closeQuietly(out);
+        } catch (IOException e) {
+            System.out.println("Error writing main ontology file.");
+            System.out.println(e.getMessage());
+        }
+
+        System.out.printf("Done. Files written to %s", owlDestFolder.getAbsolutePath());
+
     }
 
     private static void handlePropertyFiles(File mainFile, File folder, File outputRootFolder) throws IOException {
@@ -237,8 +321,12 @@ public class RDA2OWL {
 
     private static void handleSingleFile(File inputFile, File outputRootFolder) throws IOException {
 
-        System.out.format("\nInput file: %s\n", inputFile.getAbsolutePath());
+//        System.out.format("\nInput file: %s\n", inputFile.getAbsolutePath());
         File outputFile = getOutputFile(inputFile, outputRootFolder);
+
+        ImportCatalogEntry importCatalogEntry = new ImportCatalogEntry();
+        importCatalogEntry.physicalLocation = outputRootFolder.toPath().relativize(outputFile.toPath()).toString();
+        importCatalogEntries.add(importCatalogEntry);
 
         BufferedReader in = new BufferedReader(new FileReader(inputFile));
 
@@ -259,16 +347,16 @@ public class RDA2OWL {
         handleNamespaces(in, out);
 
         if (inputFile.getParentFile().getName().equals("termList")) {
-            handleSkosOntologyHeader(in, out);
+            importCatalogEntry.uri = handleSkosOntologyHeader(in, out);
         } else {
-            handleOntologyHeader(in, out);
+            importCatalogEntry.uri = handleOntologyHeader(in, out);
         }
 
 
         while  (handleNextEntity(in, out, propertyTypeHint));
 
-        in.close();
-        out.close();
+        IOUtils.closeQuietly(in);
+        IOUtils.closeQuietly(out);
     }
 
     private static void handleNamespaces(BufferedReader in, Writer out) throws IOException {
@@ -306,13 +394,17 @@ public class RDA2OWL {
     }
 
     // transforms the first rdf:Description to an owl:Ontology declaration
-    private static void handleOntologyHeader(BufferedReader in, Writer out) throws IOException {
+    private static String handleOntologyHeader(BufferedReader in, Writer out) throws IOException {
         String line = null;
 
+        String ontologyURI = null;
+
         while ((line = in.readLine()) != null) {
-            String ontologyURI = startOfEntity(line);
-            if (ontologyURI != null) {
-                line = "<owl:Ontology rdf:about=\"" + ontologyURI + "\">";
+            if (ontologyURI == null) {
+                ontologyURI = startOfEntity(line);
+                if (ontologyURI != null) {
+                    line = "<owl:Ontology rdf:about=\"" + ontologyURI + "\">";
+                }
             }
             if (isEndOfEntity(line)) {
                 out.write("</owl:Ontology>\n");
@@ -321,12 +413,14 @@ public class RDA2OWL {
             out.write(line + "\n");
 
         }
+
+        return ontologyURI;
     }
 
     private static final Pattern SKOS_CONCEPT_SCHEME_START_PATTERN = Pattern.compile("<skos:ConceptScheme rdf:about=\"(.*?)\">");
     private static final Pattern SKOS_CONCEPT_SCHEME_END_PATTERN = Pattern.compile("</skos:ConceptScheme>");
 
-    private static void handleSkosOntologyHeader(BufferedReader in, Writer out) throws IOException {
+    private static String handleSkosOntologyHeader(BufferedReader in, Writer out) throws IOException {
         String ontologyURI = null;
         LinkedList<String> lines = new LinkedList<>();
         String line = null;
@@ -350,6 +444,7 @@ public class RDA2OWL {
             out.write(actualLine + "\n");
         }
 
+        return ontologyURI;
     }
 
     private static boolean handleNextEntity(BufferedReader in, Writer out, TYPE fileSpecificPropertyType) throws IOException {
