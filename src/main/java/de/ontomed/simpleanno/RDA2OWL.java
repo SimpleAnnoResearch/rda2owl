@@ -258,10 +258,10 @@ public class RDA2OWL {
 
         handleNamespaces(in, out);
 
-        if (inputFile.getParentFile().getName().equals("Elements")) {
-            handleOntologyHeader(in, out);
-        } else {
+        if (inputFile.getParentFile().getName().equals("termList")) {
             handleSkosOntologyHeader(in, out);
+        } else {
+            handleOntologyHeader(in, out);
         }
 
 
@@ -337,7 +337,7 @@ public class RDA2OWL {
             if (matcher.find()) {
                 ontologyURI = matcher.group(1);
             } else {
-                matcher = SKOS_CONCEPT_SCHEME_START_PATTERN.matcher(line);
+                matcher = SKOS_CONCEPT_SCHEME_END_PATTERN.matcher(line);
                 if (matcher.find()) {
                     break;
                 }
@@ -366,6 +366,8 @@ public class RDA2OWL {
                 entityURI = startOfEntity(line);
                 if (entityURI == null) {
                     // still no entity start
+                    // just copy the line to the output file
+                    out.write(line + "\n");
                     continue;
                 }
             }
