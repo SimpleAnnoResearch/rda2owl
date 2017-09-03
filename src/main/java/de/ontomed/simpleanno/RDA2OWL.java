@@ -267,6 +267,10 @@ public class RDA2OWL {
                     "     xmlns:rdakit=\"http://metadataregistry.org/uri/profile/rdakit/\"\n" +
                     "     xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"\n" +
                     "     xmlns:regap=\"http://metadataregistry.org/uri/profile/regap/\"\n" +
+                    "     xmlns:termList=\"http://rdaregistry.info/termList/\"\n" +
+                    "     xmlns:termsList3D=\"http://rdaregistry.info/termListl3D/\"\n" +
+                    "     xmlns:regStatus=\"http://metadataregistry.org/uri/RegStatus/\"\n" +
+                    "     xmlns:extentNoteMus=\"http://rdaregistry.info/termList/extentNoteMus/\"\n" +
                     "     xmlns:dc=\"http://purl.org/dc/elements/1.1/\"");
 
             Pattern nsPrefixPattern = Pattern.compile("http://rdaregistry.info/.+?/(.*?)/*$");
