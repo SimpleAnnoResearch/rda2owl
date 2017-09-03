@@ -61,6 +61,21 @@ public class RDA2OWL {
 
     public static void main(String[] args) {
 
+        File userOwlDestFolder = null;
+        if (args.length != 0) {
+            System.out.printf("Using custom output folder %s\n", args[0]);
+            userOwlDestFolder = new File(args[0]);
+            if (userOwlDestFolder.exists()) {
+                if (!userOwlDestFolder.isDirectory()) {
+                    userOwlDestFolder = userOwlDestFolder.getParentFile();
+                }
+            } else {
+                if (!userOwlDestFolder.mkdirs()) {
+                    System.out.printf("Warning: Unable to create destination folder %s. Using default location instead.\n", userOwlDestFolder.getAbsolutePath());
+                    userOwlDestFolder = null;
+                }
+            }
+        }
 
         System.out.println("Checking latest RDA release version...");
 
@@ -181,7 +196,7 @@ public class RDA2OWL {
         File elementsFolder = new File(rdfxmlBaseFolder, "Elements");
         File termListFolder = new File(rdfxmlBaseFolder, "termList");
 
-        File owlDestFolder = new File(rdaBaseFolder, "owl");
+        File owlDestFolder = userOwlDestFolder == null ? new File(rdaBaseFolder, "owl") : userOwlDestFolder;
         owlDestFolder.mkdirs();
 
         Arrays.stream(elementsFolder.listFiles(new FileFilter() {
