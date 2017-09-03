@@ -275,7 +275,7 @@ public class RDA2OWL {
             for (ImportCatalogEntry entry : importCatalogEntries) {
                 Matcher nsPrefixMatcher = nsPrefixPattern.matcher(entry.uri);
                 nsPrefixMatcher.find();
-                out.write("\n     xmlns:" + nsPrefixMatcher.group(1).replace('/', '_') + "=\"" + entry.uri + "\"");
+                out.write("\n     xmlns:" + nsPrefixMatcher.group(1).replace('/', '_') + "=\"" + (entry.uri.endsWith("/") ? entry.uri : entry.uri + "/") + "\"");
             }
 
             // close the rdf:RDF tag
